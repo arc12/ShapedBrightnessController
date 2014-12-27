@@ -53,8 +53,8 @@ Control the waveform shape */
 #define SBC_WAVESHAPE_TRI 2 //!< Triangle
 #define SBC_WAVESHAPE_SQU 3 //!< Square 50/50 mark/space
 #define SBC_WAVESHAPE_PULSE 4 //!< 20/80 mark space pulse wave
-#define SBC_WAVESHAPE_HUMP 5 //!< Rounded top hump (not quite sine)
-#define SBC_WAVESHAPE_SPIKE 6 //!< Accelerating rise and fall (spikier than a triangle)
+#define SBC_WAVESHAPE_SPIKE 5 //!< Accelerating rise and fall (spikier than a triangle)
+#define SBC_WAVESHAPE_RND 6 //!< Intensity changes randomly once per cycle
 #define SBC_WAVESHAPE_ON 7 //!< The LED is always on, for the whole period
 //!@}
 
@@ -71,7 +71,7 @@ Control trigger/gate behaviour - add to SBC_WAVESHAPE_* to create bit-mask to pa
 //!@{
 #define SBC_TG_GATECHANGE 0 //!< This is default behaviour; the trigger/gate input will determine whether the LED brightness will change. (if no gate input, it remains fixed at the last value)
 #define SBC_TG_GATEOUT 64 //!< The Trigger/gate input over-rides the output. If below threshold then the LED will be off, otherwise as controlled by the waveshape/rate/etc. 
-#define SBC_TG_1SHOT 128 //!< The output will stay off (or on, if SBC_INVERT) until the trigger intput >=512. Phase is irrelevant in this mode.
+#define SBC_TG_1SHOT 128 //!< The output will stay off (or on, if SBC_INVERT) until the trigger intput >=512. Phase is irrelevant in this mode. The trigger input must drop <512 for a re-trigger.
 //!@}
 
 /*! Doxygen documentation about class Shaped Brightness Controller
@@ -80,7 +80,7 @@ class ShapedBrightnessController{
 public:
   /** @name Constructors and initialisation */
   //!@{
-  /*! Basic constructor. Just sets things up with all patterns set to SBC_WAVESHAPE_OFF and prescale=0.
+  /*! Basic constructor. Just sets things up with all patterns set to SBC_WAVESHAPE_OFF
   Zeros-out stored rate, scale and triggerIP values. NB: you must call the initialise() method to set up the PWM output device.
   @param numLeds Actual number of LEDs in use. Forced to be <=SBS_MAX_LEDS*/
   ShapedBrightnessController(uint8_t numLeds);
@@ -126,9 +126,8 @@ public:
   /*! Set the pattern for a LED. This is for a single output shape
   @param led the zero-based index of the output LED to set the rate for 
   @param shape controls the shape via a sum of pre-defined values SBC_WAVESHAPE_* + optionally SBC_WSMOD_* to make a bitmask
-  @param prescale number of places to right bit-shift the rate set by setRate(). Normally use 0. Different values may be useful when same ADC (etc) input is used to control the rate of several LEDs
   @param phase phase offset for this LED. A value in the range 0-2047 that defines the starting value for the internal counter.*/
-  void setPattern(uint8_t led, uint8_t shape, uint8_t prescale, int phase);
+  void setPattern(uint8_t led, uint8_t shape, int phase);
   //!@}
 
   /** @name Byte-serialisation of program */
@@ -139,7 +138,7 @@ public:
   void getPatternProgBytes(uint8_t led, byte patternProg[4]);
 
   /*! Sets the program using a sequence of bytes that encodes the pattern program for a LED
-  The bytes contain {shape,prescale,highByte(phase),lowByte(phase)}
+  The bytes contain {shape,-,highByte(phase),lowByte(phase)}
   @param led the zero-based index of the output LED to set the rate for 
   @param patternProg Group of 4 bytes, as obtained from getPatternProgBytes().*/
   void setPatternFromProgBytes(uint8_t led, uint8_t patternProg[4]);
@@ -151,10 +150,10 @@ private:
   int _counter[SBC_MAX_LEDS]; //the counter for each LED is a bit like the x axis scan on an oscilloscope
   int _phase[SBC_MAX_LEDS];
   uint8_t _shape[SBC_MAX_LEDS]; //stores the output patterns for each LED
-  uint8_t _prescale[SBC_MAX_LEDS]; //stores the prescale values for each LED
   int _rate[SBC_MAX_LEDS];//last value set by setRate()
   int _scale[SBC_MAX_LEDS];//max PWM value for each LED NB:0-255 range. = last value set by setScale()>>2
   int _triggerIP[SBC_MAX_LEDS];//last value set by setTriggerIP(). Used for triggering one-shots AND for gating output.
+  int _prevTriggerIP[SBC_MAX_LEDS];//trigger value on previous tick(). used to make sure trigg IP has to drop below threshold  before re-trigger
   uint8_t _cycle[SBC_MAX_LEDS];//counts how many cycles of _counter[i] - used when SBC_WSMOD_MISSn in force
   boolean _changeEnable[SBC_MAX_LEDS];//true if one-shot has been triggered and is in progress or if gate open for non-1-shot
   

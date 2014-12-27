@@ -39,12 +39,11 @@ ShapedBrightnessController::ShapedBrightnessController(uint8_t numLeds){
 	for(int i=0; i<_numLeds;i++){
 		_counter[i]=0;
 		_shape[i]=0;
-		_prescale[i]=0;
 		_rate[i]=0;
 		_scale[i]=0;
 		_triggerIP[i]=0;
 		_cycle[i]=0;
-		_changeEnable[i]=true;
+		_changeEnable[i]=false;
 	}
 }
 
@@ -66,7 +65,8 @@ void ShapedBrightnessController::tick(){
 	// gate opens again, the same brightness should pertain)
 	for(int i=0; i<_numLeds;i++){
 		if(_shape[i]&SBC_TG_1SHOT){
-			_changeEnable[i]=_changeEnable[i] || (_triggerIP[i]>=512);
+			_changeEnable[i]=_changeEnable[i] || ((_triggerIP[i]>=512) && (_prevTriggerIP[i]<512));
+			_prevTriggerIP[i] = _triggerIP[i];
 			}else{
 			_changeEnable[i]=_triggerIP[i]>=512;
 		}
@@ -75,19 +75,19 @@ void ShapedBrightnessController::tick(){
 	//update the "internal counter" - equiv to time
 	int r;
 	int c;
+	boolean cycled = false; //set to true when counter goes "over the top"
 	for(int i=0; i<_numLeds;i++){
 		if(_changeEnable[i]){
 			r=_rate[i];
-			if(_prescale[i]>0){
-				r=r>>_prescale[i];
-			}
 			c=_counter[i]+r;
 			//when the internal counter reaches its max, a cycle ends, which has various effects!
 			//_cycle is used for MISSn
 			if(c>=2048){
 				c-=2048;
-				if(_shape[i]&SBC_WSMOD_MISS2){
-					if(_cycle[i]==2){
+				cycled = true;
+				if((_shape[i]&(SBC_WSMOD_MISS2+SBC_WSMOD_MISS1))>0){
+					uint8_t cycleLength = ((_shape[i]&(SBC_WSMOD_MISS2))?2:0)+((_shape[i]&(SBC_WSMOD_MISS1))?1:0);
+					if(_cycle[i]==cycleLength){
 						_cycle[i]=0;
 						if(_shape[i]&SBC_TG_1SHOT){
 							_changeEnable[i]=false;//end of one shot after a "hit" + 2 "miss" cycles
@@ -95,34 +95,32 @@ void ShapedBrightnessController::tick(){
 					}else{
 						_cycle[i]++;
 					}
-				}else if(_shape[i]&SBC_WSMOD_MISS1){
-					if(_cycle[i]==1){
-						_cycle[i]=0;
-						if(_shape[i]&SBC_TG_1SHOT){
-							_changeEnable[i]=false;//end of one shot after "hit" + "miss" cycles
-						}
-						}else{
-						_cycle[i]++;
+				}else{
+					_cycle[i]=0;
+					if(_shape[i]&SBC_TG_1SHOT){
+						_changeEnable[i]=false;//end of one shot in non-hit-and-miss situation
 					}
-				}			
+				}		
 			}
 			_counter[i]=c;
 		}
 	}
 	
 	// Loop over all LEDs and compute the output value, taking account of lots of factors!
-	long base;
+	long base=0;
 	int output;
 	for(int i=0; i<_numLeds;i++){
-		// LED will be OFF in three situations
+		boolean updateOut = true;//gets set to false for RND when no change is due, to suppress output value updating
+					
+		// output override to 0; LED will be OFF in three situations
 		//  a) if TG_1SHOT is in force and the "shot" has ended
 		//  b) if TG_GATEOUT is in force (but not if 1-shot set... it overrides gate flags)
-		//  c) if MISS2 or MISS3 is set, and the cycle counter indicates we in a "miss"
+		//  c) if MISS2 or MISS3 is set, and the cycle counter indicates we are in a "miss" if cycle!=0
 		if( ( (_shape[i]&SBC_TG_1SHOT) && !_changeEnable[i]) ||
 			( ( (_shape[i]&(SBC_TG_1SHOT+SBC_TG_GATEOUT)) == SBC_TG_GATEOUT) && !_changeEnable[i])||
-			( (_shape[i]&SBC_WSMOD_MISS1) && (_cycle[i]==1) ) ||
-			( (_shape[i]&SBC_WSMOD_MISS2) && (_cycle[i]<=2) ) ){
-			output = 0;
+			(_cycle[i]!=0) ){
+				//( (_shape[i]&SBC_WSMOD_MISS1) && (_cycle[i]==1) ) || 	( (_shape[i]&SBC_WSMOD_MISS2) && (_cycle[i]<=2) )
+				output = 0;
 			}else{
 			//calculate the "base" output value according to the specified wave-form,
 			// later adjusted by INVERT, MISSn
@@ -130,46 +128,52 @@ void ShapedBrightnessController::tick(){
 			//first get "base" output value (pre-scaling, pre-inversion)
 			switch (_shape[i]&0x07){
 				case SBC_WAVESHAPE_OFF:
-				base = 0;
-				break;
+					base = 0;
+					break;
 				case SBC_WAVESHAPE_SAW:
-				base=_counter[i]>>3;
-				break;
+					base=_counter[i]>>3;
+					break;
 				case SBC_WAVESHAPE_TRI:
-				if(_counter[i]<1024){
-					base=_counter[i]>>2;
-					}else{
-					base=(2047-_counter[i])>>2;
-				}
-				break;
+					if(_counter[i]<1024){
+						base=_counter[i]>>2;
+						}else{
+						base=(2047-_counter[i])>>2;
+					}
+					break;
 				case SBC_WAVESHAPE_SQU:
-				if(_counter[i]<1024){
-					base=255;
-					}else{
-					base=0;
-				}
-				break;
+					if(_counter[i]<1024){
+						base=255;
+						}else{
+						base=0;
+					}
+					break;
 				case SBC_WAVESHAPE_PULSE:
-				if(_counter[i]<410){
-					base=255;
-					}else{
-					base=0;
-				}
-				break;
-				case SBC_WAVESHAPE_HUMP:
-				base =_counter[i]/2 - ((_counter[i]>>6)^2);
-				break;
+					if(_counter[i]<410){
+						base=255;
+						}else{
+						base=0;
+					}
+					break;
 				case SBC_WAVESHAPE_SPIKE:
-				if(_counter[i]<1024){
-					base=(_counter[i]>>6)^2;
+					if(_counter[i]<1024){
+						base=pow(_counter[i]>>6,2);
+						}else{
+						base=pow(31 - (_counter[i]>>6),2);
+					}
+					if(base>255) base=255;
+					break;
+				case SBC_WAVESHAPE_RND:
+					if(cycled){
+						base = random(255);
 					}else{
-					base=(32 - (_counter[i]>>6))^2;
-				}
-				if(base>255) base=255;
-				break;
+						updateOut = false;
+					}
+					break;
 				case SBC_WAVESHAPE_ON:
-				base= 255;
-				break;
+					base= 255;
+					break;
+				default:
+					base=0;
 			}
 			
 			//now do scaling and inversion
@@ -177,13 +181,22 @@ void ShapedBrightnessController::tick(){
 			if(_shape[i] & SBC_WSMOD_INVERT){
 				output = 255-output;
 			}
+			
+			//put a floor boost in to keep LEDs glimmering even at low end, but only when no output=0 override
+			if(output==0) output = 1;
+			
 		}//end of output=0 over-ride if block
 		
 		//send to the PWM
-		_pwm.SetBrightness(output,i);
-		if(i==2){
-			Serial.println(output);
+		if(updateOut){
+			_pwm.SetBrightness(output,i);
 		}
+		
+		//if(i==2){
+			//Serial.print(i);
+			//Serial.print(" ");
+			//Serial.println(output);
+		//}
 	}
 }
 
@@ -203,25 +216,24 @@ void ShapedBrightnessController::setTriggerIP(uint8_t led, int val){
 	_triggerIP[led]=val;
 }
 
-void ShapedBrightnessController::setPattern(uint8_t led, uint8_t shape, uint8_t prescale, int phase){
+void ShapedBrightnessController::setPattern(uint8_t led, uint8_t shape, int phase){
 	led=led%_numLeds;
 	_shape[led]=shape;
-	_prescale[led]=prescale;
 	phase=phase%2048;
 	_phase[led]=phase;
 	_counter[led]=phase;
+	_cycle[led]=0;
+	_changeEnable[led]=false;
 }
 
 
 void ShapedBrightnessController::getPatternProgBytes(uint8_t led, uint8_t patternProg[4]){
 	patternProg[0]=_shape[led];
-	patternProg[1]=_prescale[led];
+	patternProg[1]=0;
 	patternProg[2]=highByte(_phase[led]);
 	patternProg[3]=lowByte(_phase[led]);
 }
 
 void ShapedBrightnessController::setPatternFromProgBytes(uint8_t led, uint8_t patternProg[4]){
-	_shape[led] = patternProg[0];
-	_prescale[led]=patternProg[1];
-	_phase[led]=(((int)patternProg[2])<<8) + patternProg[3];
+	setPattern(led, patternProg[0], (((int)patternProg[2])<<8) + patternProg[3]);
 }
